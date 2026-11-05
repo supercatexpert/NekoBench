@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only
+/* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 Kyosuke Nekoyashiki
  */
 /* In-memory results, filled by main.c and rendered by html.c. */

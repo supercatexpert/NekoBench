@@ -1,9 +1,9 @@
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Kyosuke Nekoyashiki
 
 project('nekobench', 'c',
   version : '1.0.0',
-  license : 'GPL-3.0-only',
+  license : 'GPL-3.0-or-later',
   meson_version : '>= 0.60.0',
   default_options : [
     'c_std=gnu11',

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Kyosuke Nekoyashiki
+ */
 /* NekoBench - cache/RAM bandwidth & latency and core-to-core latency. */
 #include "nekobench.h"
 #include "report.h"

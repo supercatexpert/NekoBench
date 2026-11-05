@@ -1,2 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Kyosuke Nekoyashiki
+
 option('native', type : 'boolean', value : true,
        description : 'Compile with -march=native (use the widest SIMD loads/stores of the build machine)')

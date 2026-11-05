@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Kyosuke Nekoyashiki
 """Embed text assets into a C header as NUL-terminated char arrays.
 
 usage: embed.py OUTPUT.h INPUT...   (symbol: nb_asset_<basename with . -> _>)

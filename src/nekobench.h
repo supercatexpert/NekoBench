@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Kyosuke Nekoyashiki
+ */
 /* NekoBench - memory hierarchy and inter-core latency benchmark. */
 #ifndef NEKOBENCH_H
 #define NEKOBENCH_H

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Kyosuke Nekoyashiki
+ */
 /* In-memory results, filled by main.c and rendered by html.c. */
 #ifndef NEKOBENCH_REPORT_H
 #define NEKOBENCH_REPORT_H

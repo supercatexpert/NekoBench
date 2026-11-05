@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Kyosuke Nekoyashiki
+ */
 (function () {
   'use strict';
   var NS = 'http://www.w3.org/2000/svg';

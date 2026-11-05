@@ -1,0 +1,2 @@
+option('native', type : 'boolean', value : true,
+       description : 'Compile with -march=native (use the widest SIMD loads/stores of the build machine)')

@@ -1,0 +1,11 @@
+# meson setup build-armv7 --cross-file cross/arm-linux-gnueabihf.txt -Dnative=false
+[binaries]
+c = 'arm-linux-gnueabihf-gcc'
+strip = 'arm-linux-gnueabihf-strip'
+exe_wrapper = ['qemu-arm', '-L', '/usr/arm-linux-gnueabihf']
+
+[host_machine]
+system = 'linux'
+cpu_family = 'arm'
+cpu = 'armv7'
+endian = 'little'

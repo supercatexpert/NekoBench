@@ -84,7 +84,8 @@ nekobench [options]
                        unless --tests is also given)
       --aida-lat-block SIZE|random  --aida memory latency pattern
                        (default: 64M blocks, block-random)
-      --aida-huge-pages  --aida memory bandwidth on 2 MiB instead of 4 KiB pages
+      --aida-huge-pages  --aida buffers on 2 MiB instead of 4 KiB pages
+      --small-pages    4 KiB pages for every buffer instead of 2 MiB THP
       --c2c-method cas|load  core-to-core ping-pong primitive (default: cas)
 ```
 
@@ -122,9 +123,19 @@ What follows AIDA64's documented behaviour (developer posts on the AIDA64 forum)
   32 MB → 32 MB copy). Each memory thread uses 64 MiB (32 → 32 MiB copy).
 * Memory latency is "block-random": random order inside a block, then on to
   the next block.
-* Memory bandwidth uses 4 KiB pages, as AIDA64 documents for its memory
-  tests. On a 14700K this made no measurable difference compared to 2 MiB
-  pages; `--aida-huge-pages` lets you compare.
+* Every `--aida` buffer uses 4 KiB pages, as AIDA64 does on Windows (it
+  documents this for its memory tests). Bandwidth barely notices, but
+  latency does once a working set outgrows the TLB's reach, especially on
+  CPUs with small TLBs (Core 2 / Penryn: 256 entries = 1 MiB).
+  `--aida-huge-pages` puts everything on 2 MiB pages instead.
+* The L2 latency working set is at least 60% of the L2. AIDA64's L2
+  latency on a Xeon X7460 (22.4 cycles) matches a ~1.9 MiB chase of the
+  3 MiB L2 on 4 KiB pages, while NekoBench's normal target for that L2 is
+  312 KiB. Other levels keep the normal targets: 60% of a large L3 falls
+  off the cache. The notes print the sizes used.
+* Outside `--aida`, `--small-pages` puts every buffer on 4 KiB pages.
+  Combine it with `--tests sweep` or `--tests memlat` to see the latency
+  curve AIDA64 sees.
 * Cache rows group by *position*, matching AIDA64 on Panther Lake: the "L0"
   row is every core's first-level D-cache (P-core L0 plus E-core L1d), and
   the "L1" row is the P-cores' 192 KiB L1 only.
@@ -165,6 +176,13 @@ more than 8% below. Busy cores lower the turbo ratio, and so do power and
 thermal limits. Latency in **cycles** is converted with the clock measured on
 the same core, so it is unaffected. Latency in ns and L1/L2 bandwidth scale
 with the clock, and RAM results barely change.
+
+The clock can also drift *during* a run. On a Xeon X7460 with the
+`schedutil` governor, the sweep starts at 2.63 GHz and falls to ~2.1 GHz
+from the second point on. So single-thread latency rows and sweep points
+measure the clock again right after each latency run, and convert to cycles
+with that. The sweep prints it in a GHz column. For stable ns figures, use
+the `performance` governor.
 
 ## HTML report
 

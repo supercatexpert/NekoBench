@@ -264,9 +264,8 @@ static void w_aida(FILE *f, const nb_report_t *r)
     }
     fputs("</tbody></table></div>", f);
     fprintf(f, "<p class='note'>Copy counts bytes read plus bytes written, as AIDA64 scores it. "
-               "Memory write and copy use %s. Memory bandwidth uses %s per thread on %s pages; memory latency is a "
-               "%s chase, run before the bandwidth tests. Compare latency across tools in cycles, since ns scale with the clock. MB/s and GB/s are decimal. The first cache row is every core's first-level D-cache "
-               "(P-core L0 plus E-core L1d on Lion/Cougar Cove hybrids). Bars are scaled to each column's maximum.</p></section>\n",
+               "Memory write and copy use %s. Memory bandwidth uses %s per thread, all buffers on %s pages; memory latency is a "
+               "%s chase, run before the bandwidth tests. Compare latency across tools in cycles, since ns scale with the clock. MB/s and GB/s are decimal. Bars are scaled to each column's maximum.</p></section>\n",
             r->aida_nt ? "non-temporal stores" : "regular stores", r->aida_mem_per,
             r->aida_small_pages ? "4 KiB" : "2 MiB", r->aida_lat_pattern);
 }

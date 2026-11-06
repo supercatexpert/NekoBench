@@ -78,6 +78,7 @@ void nb_cpu_model(char *buf, size_t n);
 /* --------------------------------------------------------------- latency */
 
 double nb_measure_freq_ghz(int cpu);
+double nb_measure_freq_quick_ghz(int cpu);   /* no warm-up; call right after a run */
 /* Average load-to-use latency (ns) of a random pointer chase over `size`. */
 double nb_latency_ns(int cpu, size_t size, unsigned trial_ms, int repeat);
 /* Same, with a block-random chain (random order inside each `block`). */

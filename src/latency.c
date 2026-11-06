@@ -49,6 +49,26 @@ double nb_measure_freq_ghz(int cpu)
     return best;
 }
 
+/* Short probe for right after a measurement, while the core is still busy
+ * at the clock the measurement ran at: no warm-up, best of 3 x ~2-4 ms. */
+double nb_measure_freq_quick_ghz(int cpu)
+{
+    if (nb_pin_self(cpu) != 0)
+        return 0;
+    double best = 0;
+    for (int r = 0; r < 3; r++) {
+        const uint64_t n = 500000;
+        uint64_t t0 = nb_now_ns();
+        nb_sink += add_chain(n, 1);
+        uint64_t dt = nb_now_ns() - t0;
+        double ghz = (double)(n * 16) / (double)dt;
+        if (ghz > best)
+            best = ghz;
+    }
+    nb_unpin_self();
+    return best;
+}
+
 /* ---------------------------------------------------------- pointer chase */
 
 __attribute__((noinline)) static void **chase(void **p, size_t n)

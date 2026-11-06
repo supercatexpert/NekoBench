@@ -18,7 +18,7 @@
 #define MAX_CLASS  16
 
 enum { T_LAT = 1, T_BW = 2, T_MT = 4, T_C2C = 8, T_SWEEP = 16, T_AIDA = 32, T_MEMLAT = 64 };
-enum { OPT_AIDA = 1000, OPT_AIDA_BLOCK, OPT_AIDA_HUGE, OPT_C2C_METHOD };
+enum { OPT_AIDA = 1000, OPT_AIDA_BLOCK, OPT_AIDA_HUGE, OPT_SMALL_PAGES, OPT_C2C_METHOD };
 
 typedef struct {
     unsigned  tests;
@@ -31,7 +31,8 @@ typedef struct {
     int       c2c_samples, c2c_iters, c2c_method;
     const char *html;         /* HTML report path, or NULL */
     size_t    aida_block;     /* --aida memory latency block, 0 = fully random */
-    bool      aida_small_pages; /* --aida memory bandwidth on 4 KiB pages (AIDA64 default) */
+    bool      aida_small_pages; /* --aida buffers on 4 KiB pages, as AIDA64 on Windows */
+    bool      small_pages;      /* --small-pages: 4 KiB pages for every buffer */
 } opts_t;
 
 static nb_report_t R;         /* everything measured, for the HTML report */
@@ -152,7 +153,7 @@ static void run_sweep(const opts_t *o, int cpu, double ghz)
 {
     size_t max = o->sweep_max ? o->sweep_max : o->mem_size;
     printf("\n   Sweep on CPU %d (random-chase latency and single-thread read bandwidth)\n", cpu);
-    printf("   %-12s %10s %8s %11s\n", "Working set", "Lat (ns)", "cycles", "Read GB/s");
+    printf("   %-12s %10s %8s %7s %11s\n", "Working set", "Lat (ns)", "cycles", "GHz", "Read GB/s");
     for (size_t p = 4 * NB_KiB; p <= max; p *= 2) {
         size_t pts[2] = { p, p + p / 2 };
         for (int i = 0; i < 2; i++) {
@@ -161,14 +162,19 @@ static void run_sweep(const opts_t *o, int cpu, double ghz)
             char sz[32];
             nb_fmt_size(pts[i], sz, sizeof sz);
             double lat = nb_latency_ns(cpu, pts[i], o->trial_ms / 4 + 1, o->repeat);
+            /* The clock can drift during a long sweep (governor, power
+             * capping); cycles use the clock measured right after. */
+            double g = nb_measure_freq_quick_ghz(cpu);
+            if (g <= 0)
+                g = ghz;
             double bw[NB_BW_NKERNELS];
             int c = cpu;
             size_t s = pts[i];
             nb_bw_run(1, &c, &s, 1u << NB_BW_READ, o->trial_ms / 2 + 1, o->repeat, bw);
-            printf("   %-12s %10.2f %8.1f %11.1f\n", sz, lat, lat * ghz, bw[NB_BW_READ]);
+            printf("   %-12s %10.2f %8.1f %7.2f %11.1f\n", sz, lat, lat * g, g, bw[NB_BW_READ]);
             nb_rpt_single_t *rs = &R.single[R.nsingle - 1];
             if (rs->npts < NB_RPT_MAX_SWEEP)
-                rs->pts[rs->npts++] = (nb_rpt_pt_t){ pts[i], lat, lat * ghz, bw[NB_BW_READ] };
+                rs->pts[rs->npts++] = (nb_rpt_pt_t){ pts[i], lat, lat * g, bw[NB_BW_READ] };
         }
     }
 }
@@ -225,10 +231,13 @@ static void run_single(const opts_t *o, const nb_cpu_t *t)
             row->bw[k] = -1;
         if (o->tests & T_LAT) {
             double lat = nb_latency_ns(t->cpu, w, o->trial_ms / 2 + 1, o->repeat);
-            printf(" %10.2f %8.1f", lat, lat * ghz);
+            double g = nb_measure_freq_quick_ghz(t->cpu);   /* clock may have drifted */
+            if (g <= 0)
+                g = ghz;
+            printf(" %10.2f %8.1f", lat, lat * g);
             fflush(stdout);
             row->lat_ns = lat;
-            row->lat_cyc = lat * ghz;
+            row->lat_cyc = lat * g;
         }
         if (o->tests & T_BW) {
             double bw[NB_BW_NKERNELS];
@@ -437,6 +446,21 @@ static void run_aida(const opts_t *o, const int *cpus, int n, int lat_cpu, bool 
     for (int i = 0; i < lt.ncache; i++)
         caps[i] = (double)lt.cache[i].size;
     level_targets(caps, lt.cache, lt.ncache, lws);
+    /* AIDA64's latency tests reach well into each cache: on a Xeon X7460
+     * its L2 latency (22.4 cycles) matches a ~1.9 MiB chase of the 3 MiB L2
+     * on 4 KiB pages (sweep with per-point clock), not our 312 KiB target,
+     * and the 358H's L2 points the same way. Use at least 60% of L2. Only
+     * L2: 60% of a large L3 (e.g. 20 MiB of a 14700K's 33 MiB) falls off the
+     * cache, and the first levels already match. */
+    for (int i = 1; i < lt.ncache; i++) {
+        if (lt.cache[i].level != 2)
+            continue;
+        size_t frac = lt.cache[i].size / 10 * 6 / 4096 * 4096;
+        if (lws[i] < frac)
+            lws[i] = frac;
+    }
+    /* AIDA64 runs on ordinary 4 KiB pages (no large-page privilege). */
+    nb_huge_pages = !(o->small_pages || o->aida_small_pages);
 
     printf("\n== AIDA64-style Cache & Memory Benchmark ==\n");
     printf("   bandwidth: %d threads on CPUs %s; latency: CPU %d (%s)\n\n",
@@ -490,9 +514,7 @@ static void run_aida(const opts_t *o, const int *cpus, int n, int lat_cpu, bool 
 
             /* AIDA64 documents 4 KiB pages for its memory benchmarks. */
             double bw[NB_BW_NKERNELS];
-            nb_huge_pages = !(pr->ram && o->aida_small_pages);
             int rc = nb_bw_run(pr->nr, pr->cpus, pr->sizes, mask, o->trial_ms, o->repeat, bw);
-            nb_huge_pages = true;
 
             double v[3] = { rc ? -1 : bw[kr], rc ? -1 : bw[kw], rc ? -1 : bw[kc] };
             for (int k = 0; k < 3; k++) {
@@ -523,6 +545,7 @@ static void run_aida(const opts_t *o, const int *cpus, int n, int lat_cpu, bool 
             }
         }
     }
+    nb_huge_pages = !o->small_pages;
     char pers[32], wss[32], blk[64];
     nb_fmt_size(per, pers, sizeof pers);
     nb_fmt_size(o->mem_size, wss, sizeof wss);
@@ -543,18 +566,28 @@ static void run_aida(const opts_t *o, const int *cpus, int n, int lat_cpu, bool 
            "   (which go first, before the all-core bandwidth runs heat the chip). Compare\n"
            "   across tools in cycles: ns scale with the clock.\n", ghz, maxs);
     print_clock_note(lat_cpu, ghz, false);
+    char lwl[160] = "";
+    for (int i = 0, len = 0; i < lt.ncache && len < (int)sizeof lwl - 32; i++) {
+        char name[16], sz[32];
+        nb_fmt_size(lws[i], sz, sizeof sz);
+        len += snprintf(lwl + len, sizeof lwl - (size_t)len, "%s%s %s", i ? ", " : "",
+                        level_name(&lt.cache[i], name, sizeof name), sz);
+    }
+    bool small = o->small_pages || o->aida_small_pages;
     printf("   Notes: copy = bytes read + written, as AIDA64 scores it. Memory write/copy use %s.\n"
-           "   Memory bandwidth: %s per thread, %s pages. Memory latency: %s chase over %s.\n"
+           "   All buffers on %s pages. Memory bandwidth: %s per thread. Memory latency:\n"
+           "   %s chase over %s.\n"
+           "   Cache latency working sets: %s.\n"
            "   MB/s and GB/s are decimal (10^6, 10^9).\n",
-           nt ? "non-temporal stores" : "regular stores (no NT support in this build)", pers,
-           o->aida_small_pages ? "4 KiB" : "2 MiB (THP)", blk, wss);
+           nt ? "non-temporal stores" : "regular stores (no NT support in this build)",
+           small ? "4 KiB" : "2 MiB (THP)", pers, blk, wss, lwl);
     for (int i = 0; i < nrows; i++)
         if (!rows[i].ram && strchr(rows[i].name, '/')) {
             printf("   The %s row is every core's first-level D-cache (P-core L0 + E-core L1d),\n"
                    "   grouped by position as AIDA64 does.\n", rows[i].name);
             break;
         }
-    R.aida_small_pages = o->aida_small_pages;
+    R.aida_small_pages = small;
     snprintf(R.aida_mem_per, sizeof R.aida_mem_per, "%s", pers);
     R.aida_nt = nt;
     plan_free(rows, nrows);
@@ -728,8 +761,10 @@ static void usage(const char *argv0)
         "      --aida-lat-block SIZE|random  --aida memory latency pattern: block-random\n"
         "                       with SIZE blocks (default 64M), or fully random;\n"
         "                       calibrate with --tests memlat\n"
-        "      --aida-huge-pages  --aida memory bandwidth on 2 MiB pages instead of\n"
-        "                       AIDA64's 4 KiB pages\n"
+        "      --aida-huge-pages  --aida buffers on 2 MiB pages instead of AIDA64's\n"
+        "                       4 KiB pages\n"
+        "      --small-pages    4 KiB pages for every buffer instead of 2 MiB THP (adds\n"
+        "                       TLB misses, as on Windows without large pages)\n"
         "      --c2c-method M   core-to-core ping-pong: cas (default; both sides spin on\n"
         "                       compare-and-swap) or load (spin on loads, answer with a\n"
         "                       store; overstates latency on older/FSB CPUs)\n"
@@ -796,6 +831,7 @@ int main(int argc, char **argv)
         { "aida", no_argument, NULL, OPT_AIDA },
         { "aida-lat-block", required_argument, NULL, OPT_AIDA_BLOCK },
         { "aida-huge-pages", no_argument, NULL, OPT_AIDA_HUGE },
+        { "small-pages", no_argument, NULL, OPT_SMALL_PAGES },
         { "c2c-method", required_argument, NULL, OPT_C2C_METHOD },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
@@ -876,6 +912,7 @@ int main(int argc, char **argv)
             }
             break;
         case OPT_AIDA_HUGE: o.aida_small_pages = false; break;
+        case OPT_SMALL_PAGES: o.small_pages = true; break;
         case OPT_C2C_METHOD: {
             int m = -1;
             for (int k = 0; k < NB_C2C_NMETHODS; k++)
@@ -963,8 +1000,10 @@ int main(int argc, char **argv)
                "              firmware); packages and cache sharing rebuilt from CPUID\n");
     printf("CPU:          %s\n", model);
     printf("Logical CPUs: %d usable (of %ld online)\n", nallowed, sysconf(_SC_NPROCESSORS_ONLN));
+    nb_huge_pages = !o.small_pages;
     printf("THP:          %s%s\n", nb_thp_mode(),
-           strcmp(nb_thp_mode(), "never") == 0
+           o.small_pages ? "  (not used: --small-pages, latencies include TLB misses)"
+           : strcmp(nb_thp_mode(), "never") == 0
                ? "  (WARNING: no huge pages, latencies include TLB misses)" : "");
     printf("RAM test WS:  %s\n", memsz);
     const char *simd =

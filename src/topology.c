@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(__i386__) || defined(__x86_64__)
+#include <cpuid.h>
+#endif
 
 /* NEKOBENCH_SYSFS_ROOT=/some/dir makes every /sys and /proc read come from
  * /some/dir/sys/... and /some/dir/proc/..., so the topology logic can be
@@ -186,6 +189,179 @@ static const struct {
     { 0xCC, "Panther Lake (Cougar Cove)" },
 };
 
+/* ------------------------------------------------- APIC-ID topology rebuild
+ *
+ * Linux derives packages and cache sharing from each CPU's *current* local
+ * APIC ID. Some firmware reprograms those (e.g. IBM x3850 M2 with Xeon
+ * X7460: CPUs 8-11 report APIC IDs 108/109/84/85 against initial IDs
+ * 12/13/20/21), which splits one 6-core package into a "4-core" and a
+ * "2-core" package with an L3 each. CPUID still reports the initial APIC ID
+ * (/proc/cpuinfo "initial apicid") and the ID-space shifts (leaf 1
+ * EBX[23:16], leaf 4 EAX[25:14]), so when the two IDs disagree we rebuild
+ * the package and the cache sharing from those. Only for Intel CPUs with
+ * fewer than 256 logical CPUs and distinct initial IDs. */
+
+#define AP_MAX 1024
+static struct {
+    int   state;                     /* 0 = not probed, 1 = no rebuild, 2 = rebuild */
+    int   pkg_shift, nlvl;
+    int   lvl[16], shift[16];
+    char  type[16];
+    bool  incl[16];                  /* leaf 4 EDX[1]; valid for every Intel CPU */
+    short init[AP_MAX];              /* initial APIC ID per CPU, -1 unknown */
+} ap;
+
+/* In replay mode, CPUID comes from <root>/cpuid.txt in `cpuid -r` format:
+ *   0x00000004 0x03: eax=0x1c01c163 ebx=0x03c0003f ecx=0x00003fff edx=0x00000002 */
+static bool get_cpuid(unsigned leaf, unsigned sub, unsigned r[4])
+{
+    if (sys_root()) {
+        FILE *f = open_sys("/cpuid.txt");
+        if (!f)
+            return false;
+        char line[256];
+        bool ok = false;
+        while (!ok && fgets(line, sizeof line, f)) {
+            unsigned l, s2, x[4];
+            if (sscanf(line, " 0x%x 0x%x: eax=0x%x ebx=0x%x ecx=0x%x edx=0x%x",
+                       &l, &s2, &x[0], &x[1], &x[2], &x[3]) == 6 && l == leaf && s2 == sub) {
+                memcpy(r, x, sizeof x);
+                ok = true;
+            }
+        }
+        fclose(f);
+        return ok;
+    }
+#if defined(__i386__) || defined(__x86_64__)
+    if (__get_cpuid_max(0, NULL) < leaf)
+        return false;
+    __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+    return true;
+#else
+    (void)leaf; (void)sub; (void)r;
+    return false;
+#endif
+}
+
+static int ceil_log2(unsigned n)
+{
+    int s = 0;
+    while ((1u << s) < n)
+        s++;
+    return s;
+}
+
+static void apic_probe(void)
+{
+    ap.state = 1;
+    for (int i = 0; i < AP_MAX; i++)
+        ap.init[i] = -1;
+
+    char vendor[32];
+    int family, model;
+    cpu_ident(vendor, sizeof vendor, &family, &model);
+    if (strcmp(vendor, "GenuineIntel") != 0)
+        return;
+
+    unsigned r[4];
+    for (unsigned sub = 0; sub < 16 && ap.nlvl < 16; sub++) {
+        if (!get_cpuid(4, sub, r))
+            continue;   /* replay dumps may hold only some subleaves */
+        unsigned type = r[0] & 31;
+        if (type == 0 && !sys_root())
+            break;
+        if (type != 1 && type != 3)
+            continue;
+        ap.lvl[ap.nlvl] = (int)(r[0] >> 5 & 7);
+        ap.type[ap.nlvl] = type == 1 ? 'D' : 'U';
+        ap.shift[ap.nlvl] = ceil_log2((r[0] >> 14 & 0xfff) + 1);
+        ap.incl[ap.nlvl] = r[3] >> 1 & 1;
+        ap.nlvl++;
+    }
+
+    FILE *f = open_sys("/proc/cpuinfo");
+    if (!f)
+        return;
+    char line[512];
+    int cpu = -1, ncpu = 0, nmis = 0;
+    long apic = -1;
+    bool seen[256] = { false }, bad = false;
+    while (fgets(line, sizeof line, f)) {
+        char *v = strchr(line, ':');
+        if (!v)
+            continue;
+        long x = strtol(v + 1, NULL, 10);
+        if (strncmp(line, "processor", 9) == 0) {
+            cpu = (int)x;
+            apic = -1;
+            ncpu++;
+        } else if (strncmp(line, "apicid", 6) == 0) {
+            apic = x;
+        } else if (strncmp(line, "initial apicid", 14) == 0) {
+            if (cpu < 0 || cpu >= AP_MAX || x < 0 || x > 255 || seen[x]) {
+                bad = true;
+                continue;
+            }
+            seen[x] = true;
+            ap.init[cpu] = (short)x;
+            if (apic >= 0 && apic != x)
+                nmis++;
+        }
+    }
+    fclose(f);
+    for (int i = 0; i < AP_MAX && i < ncpu; i++)
+        if (ap.init[i] < 0)
+            bad = true;
+    if (bad || nmis == 0 || ncpu > 255)
+        return;
+
+    if (!get_cpuid(1, 0, r))
+        return;
+    unsigned per_pkg = (r[3] >> 28 & 1) ? (r[1] >> 16 & 0xff) : 1;
+    ap.pkg_shift = ceil_log2(per_pkg ? per_pkg : 1);
+    ap.state = 2;
+}
+
+bool nb_topo_apic_rebuilt(void)
+{
+    if (!ap.state)
+        apic_probe();
+    return ap.state == 2;
+}
+
+static void apic_apply(nb_cpu_t *out)
+{
+    if (!ap.state)
+        apic_probe();
+    for (int j = 0; j < out->ncache; j++)
+        for (int k = 0; k < ap.nlvl; k++)
+            if (ap.lvl[k] == out->cache[j].level && ap.type[k] == out->cache[j].type)
+                out->cache[j].inclusive = ap.incl[k] && out->cache[j].level >= 2;
+    if (!nb_topo_apic_rebuilt() || out->cpu < 0 || out->cpu >= AP_MAX || ap.init[out->cpu] < 0)
+        return;
+    int id = ap.init[out->cpu];
+    out->package = id >> ap.pkg_shift;
+    for (int j = 0; j < out->ncache; j++) {
+        nb_cache_t *c = &out->cache[j];
+        for (int k = 0; k < ap.nlvl; k++) {
+            if (ap.lvl[k] != c->level || ap.type[k] != c->type)
+                continue;
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            for (int i = 0; i < AP_MAX && i < CPU_SETSIZE; i++)
+                if (ap.init[i] >= 0 && (ap.init[i] >> ap.shift[k]) == (id >> ap.shift[k]))
+                    CPU_SET(i, &set);
+            if (!CPU_EQUAL(&set, &c->shared)) {
+                c->os_nshared = c->nshared;
+                c->shared = set;
+                c->nshared = CPU_COUNT(&set);
+                c->shared_fixed = true;
+            }
+            break;
+        }
+    }
+}
+
 static void apply_quirks(nb_cpu_t *out)
 {
     char vendor[32];
@@ -279,6 +455,13 @@ static int topo_read(int cpu, nb_cpu_t *out, bool quirks)
     memset(out, 0, sizeof *out);
     out->cpu = cpu;
     out->kind = core_kind(cpu);
+    out->package = -1;
+    {
+        char path[128], buf[64];
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
+        if (read_line(path, buf, sizeof buf) && buf[0])
+            out->package = atoi(buf);
+    }
 
     for (int idx = 0; idx < 16 && out->ncache < NB_MAX_CACHES; idx++) {
         char path[256], buf[1024];
@@ -327,6 +510,7 @@ static int topo_read(int cpu, nb_cpu_t *out, bool quirks)
         out->cache[out->ncache - 1].level < sys_max_level())
         out->kind = "LP E-core";
 
+    apic_apply(out);   /* before quirks: works on OS level numbers */
     if (quirks)
         apply_quirks(out);
     return out->ncache;

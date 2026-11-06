@@ -53,11 +53,15 @@ typedef struct {
     cpu_set_t shared;     /* logical CPUs sharing this cache instance */
     int       nshared;
     bool      inferred;   /* not enumerated by the OS; added from the CPU model table */
+    int       os_nshared; /* if shared_fixed: the sharer count the OS reported */
+    bool      shared_fixed; /* sharing rebuilt from CPUID initial APIC IDs */
+    bool      inclusive;  /* holds the lower levels' data (CPUID leaf 4), x86 Intel only */
 } nb_cache_t;
 
 typedef struct {
     int         cpu;
     const char *kind;     /* "P-core", "E-core", "LP E-core" or "core" */
+    int         package;  /* physical package (socket) id, -1 if unknown */
     int         ncache;
     nb_cache_t  cache[NB_MAX_CACHES];   /* data/unified only, sorted by level */
 } nb_cpu_t;
@@ -66,6 +70,9 @@ int  nb_topo_cpu(int cpu, nb_cpu_t *out);
 unsigned nb_cpu_max_mhz(int cpu);              /* cpufreq max (boost) clock, 0 if unknown */
 void nb_cpufreq_policy(char *buf, size_t n);   /* "governor / EPP" of the first CPU */
 bool nb_topo_replayed(void);   /* NEKOBENCH_SYSFS_ROOT in effect */
+/* The kernel's APIC IDs differ from CPUID's initial ones (firmware
+ * renumbering); packages and cache sharing were rebuilt from CPUID. */
+bool nb_topo_apic_rebuilt(void);
 void nb_cpu_model(char *buf, size_t n);
 
 /* --------------------------------------------------------------- latency */
@@ -91,9 +98,12 @@ int nb_bw_run(int n, const int *cpus, const size_t *sizes, unsigned kernel_mask,
 
 /* ------------------------------------------------------------------- c2c */
 
+enum { NB_C2C_CAS, NB_C2C_LOAD, NB_C2C_NMETHODS };
+extern const char *const nb_c2c_method_names[NB_C2C_NMETHODS];
+
 /* One-way core-to-core latency between CPUs a and b (half a round trip of a
- * cache line ping-pong). Returns 0 on success. */
-int nb_c2c_pair(int a, int b, int samples, int iters, double *median_ns,
+ * cache line ping-pong, see c2c.c for the methods). Returns 0 on success. */
+int nb_c2c_pair(int a, int b, int method, int samples, int iters, double *median_ns,
                 double *min_ns);
 
 #endif

@@ -10,6 +10,9 @@
 #define NB_RPT_MAX_CLASS 16
 #define NB_RPT_MAX_SWEEP 96
 
+/* core-to-core pair categories: SMT siblings, same L2, same package, other package */
+enum { NB_C2C_NCATS = 4 };
+
 typedef struct {
     char   name[16];     /* "L1d", "L2", ..., "RAM" */
     char   col1[32];     /* single: cache size; multi: total working set */
@@ -74,11 +77,12 @@ typedef struct {
     bool         has_c2c;
     char         c2c_cpulist[512];
     int          c2c_n, c2c_samples, c2c_iters;
+    const char  *c2c_method;      /* "cas" or "load" */
     int         *c2c_cpus;        /* c2c_n entries */
     double      *c2c_m;           /* c2c_n x c2c_n, ns; NAN on diagonal/failure */
-    signed char *c2c_cat;         /* pair category: 0 SMT, 1 same L2, 2 other */
-    int          cat_cnt[3];
-    double       cat_min[3], cat_avg[3], cat_max[3];
+    signed char *c2c_cat;         /* pair category, index into nb_c2c_cat_names */
+    int          cat_cnt[NB_C2C_NCATS];
+    double       cat_min[NB_C2C_NCATS], cat_avg[NB_C2C_NCATS], cat_max[NB_C2C_NCATS];
 
     /* AIDA64-style summary */
     bool          has_aida, aida_nt, aida_small_pages;
@@ -90,7 +94,7 @@ typedef struct {
     char          policy[96];     /* cpufreq governor / EPP */
 } nb_report_t;
 
-extern const char *const nb_c2c_cat_names[3];
+extern const char *const nb_c2c_cat_names[NB_C2C_NCATS];
 
 /* Write a self-contained HTML report. Returns 0 on success. */
 int nb_html_write(const char *path, const nb_report_t *r);

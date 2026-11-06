@@ -85,6 +85,7 @@ nekobench [options]
       --aida-lat-block SIZE|random  --aida memory latency pattern
                        (default: 64M blocks, block-random)
       --aida-huge-pages  --aida memory bandwidth on 2 MiB instead of 4 KiB pages
+      --c2c-method cas|load  core-to-core ping-pong primitive (default: cas)
 ```
 
 `--tests memlat` (not part of `all`) prints memory latency for block-random
@@ -177,7 +178,7 @@ unchanged. The report contains:
   Dashed lines mark cache sizes. A hover/keyboard crosshair shows exact
   values, and a table view is included.
 * the core-to-core matrix as a heatmap. Hovering a cell shows the pair and
-  its category (SMT sibling, same L2 cluster, other).
+  its category (SMT sibling, same L2 cluster, same package, other package).
 
 Every number is in a table, so the page is fully readable without JavaScript.
 The script only adds the charts, tooltips and the theme toggle. CSS and JS are
@@ -208,6 +209,19 @@ report. The insertion only happens when the reported layout matches the
 expected one. Low-power E-cores that lack the shared L3 are labelled
 "LP E-core".
 
+**Topology the kernel gets wrong.** Linux builds packages and cache sharing
+from each CPU's *current* local APIC ID, and some firmware renumbers those.
+On an IBM x3850 M2 with two Xeon X7460s, CPUs 8–11 report APIC IDs
+108/109/84/85, while their initial IDs (`initial apicid` in `/proc/cpuinfo`)
+are 12/13/20/21. The kernel therefore splits each 6-core socket into a
+"4-core" and a "2-core" package, each with its own L3. When the two IDs
+disagree on an Intel CPU, NekoBench rebuilds packages and cache sharing
+from the initial IDs. It uses CPUID's own ID ranges for this: leaf 1
+EBX[23:16] for the package and leaf 4 EAX[25:14] for each cache. The output
+says so in a NOTE, the text output shows the sharing count the OS
+reported, and the HTML report marks the cell with †. When replaying a dump,
+put `cpuid -1 -r` output in `<root>/cpuid.txt` to get the same behaviour.
+
 In the multi-thread table, a cache row runs only on CPUs that have that
 level, so LP E-cores sit out the L3 row. The first row is each CPU's
 *first-level* D-cache (e.g. "L0d/L1d" on Panther Lake). Intel reuses the
@@ -215,9 +229,13 @@ name "L1" for different positions in the hierarchy, so the first level is
 grouped by position rather than by name.
 
 **Working sets.** L1 is tested at half its size. Level *n* is tested at the
-geometric midpoint between the sum of the levels below it and its own size.
-Caches are treated as non-inclusive, and random-access hit rates fall off well
-before a cache is "full", so this keeps away from both edges. For the
+geometric midpoint between the capacity in front of it and its own size, or at
+the arithmetic midpoint when the two are within 4×. For a non-inclusive
+cache, the capacity in front is the sum of all smaller levels. For a cache
+that CPUID leaf 4 marks inclusive (for example older Intel L3s and the
+Xeon 7400's), it's only the next level down, because that data already
+sits inside it. Random-access hit rates fall off well before a cache is
+"full", so this keeps away from both edges. For the
 multi-thread runs, a shared cache's capacity is split between the threads of
 the run that share it. Buffers are 2 MiB-aligned, `madvise(MADV_HUGEPAGE)`'d
 and pre-faulted, so with THP the measurements are almost free of TLB misses.
@@ -245,11 +263,23 @@ different speeds.
 
 **Core-to-core latency.** Two threads pinned to CPUs *a* and *b* bounce a
 sequence number through one cache line (128 B-aligned). Every round trip moves
-the line a→b→a, and the matrix shows one-way latency = RTT / 2. The spin loops
-use no `PAUSE`, because it costs 100+ cycles on recent Intel cores. Each value
-is the best of several samples, and each sample averages hundreds of round
-trips, so samples hit by preemption are filtered out. The summary groups pairs
-into SMT siblings, same-L2 cluster, and others.
+the line a→b→a, and the matrix shows one-way latency = RTT / 2.
+
+By default both sides spin on compare-and-swap (`--c2c-method cas`). A failed
+CAS still takes the line exclusive, so each handoff is a single ownership
+transfer. The alternative, `--c2c-method load`, spins on plain loads and
+answers with a store. That leaves the waiter holding a Shared copy, so every
+store needs an extra invalidation, and the loads in flight when the line is
+stolen cause memory-ordering machine clears. On a recent core this mostly
+shows on SMT siblings (about 40 ns instead of 5 ns on Raptor Lake). On Core 2
+era FSB systems such as a 2-socket Xeon X7460, it inflates every
+cross-L2 pair to 1.1–1.6 µs, where the real figure is 65–190 ns.
+
+The spin loops use no `PAUSE`, because it costs 100+ cycles on recent Intel
+cores. Each value is the best of several samples, and each sample averages
+hundreds of round trips, so samples hit by preemption are filtered out. The
+summary groups pairs into SMT siblings, same-L2 cluster, same package, and
+different package (from `topology/physical_package_id`).
 
 ## Replaying another machine's topology
 

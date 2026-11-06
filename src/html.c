@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-const char *const nb_c2c_cat_names[3] = {
-    "Same core (SMT siblings)", "Same L2 cluster", "Different core/cluster"
+const char *const nb_c2c_cat_names[NB_C2C_NCATS] = {
+    "Same core (SMT siblings)", "Same L2 cluster", "Same package", "Different package"
 };
 
 /* ------------------------------------------------------------- escaping */
@@ -98,13 +98,14 @@ static void w_system(FILE *f, const nb_report_t *r)
 static void w_topology(FILE *f, const nb_report_t *r)
 {
     int minlvl = 1, maxlvl = 3;
-    bool inferred = false;
+    bool inferred = false, fixed = false;
     for (int k = 0; k < r->ncls; k++)
         for (int j = 0; j < r->cls[k].topo.ncache; j++) {
             const nb_cache_t *c = &r->cls[k].topo.cache[j];
             if (c->level > maxlvl) maxlvl = c->level;
             if (c->level < minlvl) minlvl = c->level;
             inferred |= c->inferred;
+            fixed |= c->shared_fixed;
         }
 
     fputs("<section class='card'><h2>Cache topology</h2>", f);
@@ -131,9 +132,9 @@ static void w_topology(FILE *f, const nb_report_t *r)
                 continue;
             }
             char sz[32];
-            fprintf(f, "<td>%s%s <span class='dim'>&middot; %zu B lines &middot; shared by %d CPU%s</span></td>",
+            fprintf(f, "<td>%s%s <span class='dim'>&middot; %zu B lines &middot; shared by %d CPU%s%s</span></td>",
                     fsize(c->size, sz, sizeof sz), c->inferred ? "*" : "", c->line, c->nshared,
-                    c->nshared == 1 ? "" : "s");
+                    c->nshared == 1 ? "" : "s", c->shared_fixed ? "&dagger;" : "");
         }
         fputs("</tr>", f);
     }
@@ -141,6 +142,10 @@ static void w_topology(FILE *f, const nb_report_t *r)
     if (inferred)
         fputs("<p class='note'>* Not enumerated by the OS (CPUID leaf 4). Added from NekoBench's CPU model table: "
               "on these P-cores Intel calls the 48 KiB first-level D-cache L0, backed by a 192 KiB L1 D-cache.</p>", f);
+    if (fixed)
+        fputs("<p class='note'>&dagger; The OS reports a different sharing for this cache. The kernel's APIC IDs "
+              "differ from the CPUID initial APIC IDs (renumbered by firmware), so NekoBench rebuilt packages "
+              "and cache sharing from CPUID.</p>", f);
     fputs("</section>\n", f);
 }
 
@@ -387,13 +392,14 @@ static void w_c2c(FILE *f, const nb_report_t *r)
 
     fprintf(f, "<section class='card'><h2>Core-to-core latency</h2>"
                "<p class='sub'>One-way latency in ns (half a cache-line round trip), best of %d samples "
-               "&times; %d round trips, CPUs ", r->c2c_samples, r->c2c_iters);
+               "&times; %d round trips (%s ping-pong), CPUs ", r->c2c_samples, r->c2c_iters,
+               r->c2c_method ? r->c2c_method : "cas");
     esc(f, r->c2c_cpulist);
     fputs(".</p>", f);
 
     fputs("<table class='data' style='width:auto'><thead><tr><th>Pair type</th><th class='num'>Pairs</th>"
           "<th class='num'>Min (ns)</th><th class='num'>Avg (ns)</th><th class='num'>Max (ns)</th></tr></thead><tbody>", f);
-    for (int c = 0; c < 3; c++)
+    for (int c = 0; c < NB_C2C_NCATS; c++)
         if (r->cat_cnt[c])
             fprintf(f, "<tr><td>%s</td><td class='num'>%d</td><td class='num'>%.1f</td>"
                        "<td class='num'>%.1f</td><td class='num'>%.1f</td></tr>",
@@ -434,7 +440,7 @@ static void w_data(FILE *f, const nb_report_t *r)
 {
     fputs("<script type='application/json' id='nb-data'>{", f);
     fputs("\"c2cCats\":[", f);
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < NB_C2C_NCATS; c++) {
         if (c)
             fputc(',', f);
         jstr(f, nb_c2c_cat_names[c]);

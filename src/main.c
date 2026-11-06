@@ -18,7 +18,7 @@
 #define MAX_CLASS  16
 
 enum { T_LAT = 1, T_BW = 2, T_MT = 4, T_C2C = 8, T_SWEEP = 16, T_AIDA = 32, T_MEMLAT = 64 };
-enum { OPT_AIDA = 1000, OPT_AIDA_BLOCK, OPT_AIDA_HUGE };
+enum { OPT_AIDA = 1000, OPT_AIDA_BLOCK, OPT_AIDA_HUGE, OPT_C2C_METHOD };
 
 typedef struct {
     unsigned  tests;
@@ -28,7 +28,7 @@ typedef struct {
     size_t    sweep_max;      /* 0: = mem_size */
     unsigned  trial_ms;
     int       repeat;
-    int       c2c_samples, c2c_iters;
+    int       c2c_samples, c2c_iters, c2c_method;
     const char *html;         /* HTML report path, or NULL */
     size_t    aida_block;     /* --aida memory latency block, 0 = fully random */
     bool      aida_small_pages; /* --aida memory bandwidth on 4 KiB pages (AIDA64 default) */
@@ -87,15 +87,23 @@ static const char *level_name(const nb_cache_t *c, char *buf, size_t n)
  * other tenants), so staying far from both edges gives a clean plateau. When
  * the level is barely bigger than what's below (e.g. a shared L3 split over
  * many threads) fall back to "below + half". */
-static void level_targets(const double *caps, int n, size_t *ws)
+/* `below` is the capacity in front of level i: the sum of all smaller levels
+ * when they hold different data (exclusive / non-inclusive), or just the
+ * next level down when level i is inclusive (it already holds that data).
+ * Close levels get the midpoint, so an inclusive cache is never overrun. */
+static void level_targets(const double *caps, const nb_cache_t *c, int n, size_t *ws)
 {
     double below = 0;
     for (int i = 0; i < n; i++) {
         double t;
+        if (i > 0 && c[i].inclusive)
+            below = caps[i - 1];
         if (i == 0)
             t = caps[0] / 2;
         else if (caps[i] >= 4 * below)
             t = sqrt(below * caps[i]);
+        else if (c[i].inclusive)
+            t = (below + caps[i]) / 2;
         else
             t = below + caps[i] / 2;
         size_t s = (size_t)t / 4096 * 4096;
@@ -177,7 +185,7 @@ static void run_single(const opts_t *o, const nb_cpu_t *t)
     size_t ws[NB_MAX_CACHES];
     for (int i = 0; i < t->ncache; i++)
         caps[i] = (double)t->cache[i].size;
-    level_targets(caps, t->ncache, ws);
+    level_targets(caps, t->cache, t->ncache, ws);
 
     printf("   %-6s %-10s %-12s", "Level", "Size", "Working set");
     if (o->tests & T_LAT)
@@ -275,7 +283,7 @@ static int mt_plan(const cpu_set_t *set, const int *cpus, int n, size_t ram_per_
             if (topo[i].cache[j].level > maxlvl)
                 maxlvl = topo[i].cache[j].level;
         }
-        level_targets(caps, topo[i].ncache, ws[i]);
+        level_targets(caps, topo[i].cache, topo[i].ncache, ws[i]);
     }
 
     int nrows = 0;
@@ -423,7 +431,7 @@ static void run_aida(const opts_t *o, const int *cpus, int n, int lat_cpu, bool 
     size_t lws[NB_MAX_CACHES];
     for (int i = 0; i < lt.ncache; i++)
         caps[i] = (double)lt.cache[i].size;
-    level_targets(caps, lt.ncache, lws);
+    level_targets(caps, lt.cache, lt.ncache, lws);
 
     printf("\n== AIDA64-style Cache & Memory Benchmark ==\n");
     printf("   bandwidth: %d threads on CPUs %s; latency: CPU %d (%s)\n\n",
@@ -582,8 +590,8 @@ static void run_c2c(const opts_t *o, const int *cpus, int n)
 {
     char list[512];
     nb_fmt_cpulist(&o->cpus, list, sizeof list);
-    printf("\n== Core-to-core latency (one-way ns, best of %d samples x %d round trips): CPUs %s ==\n",
-           o->c2c_samples, o->c2c_iters, list);
+    printf("\n== Core-to-core latency (one-way ns, best of %d samples x %d round trips, %s): CPUs %s ==\n",
+           o->c2c_samples, o->c2c_iters, nb_c2c_method_names[o->c2c_method], list);
     if (n < 2) {
         printf("   need at least 2 CPUs\n");
         return;
@@ -601,9 +609,11 @@ static void run_c2c(const opts_t *o, const int *cpus, int n)
 
     bool tty = isatty(STDERR_FILENO);
     int pairs = n * (n - 1) / 2, done = 0;
-    /* categories: 0 = same core (share L1), 1 = share L2, 2 = rest */
-    double csum[3] = { 0 }, cmin[3] = { INFINITY, INFINITY, INFINITY }, cmax[3] = { 0 };
-    int ccnt[3] = { 0 };
+    /* categories: 0 = same core (share L1), 1 = share L2, 2 = same package, 3 = other package */
+    double csum[NB_C2C_NCATS] = { 0 }, cmin[NB_C2C_NCATS], cmax[NB_C2C_NCATS] = { 0 };
+    int ccnt[NB_C2C_NCATS] = { 0 };
+    for (int c = 0; c < NB_C2C_NCATS; c++)
+        cmin[c] = INFINITY;
 
     for (int i = 0; i < n; i++) {
         m[i * n + i] = NAN;
@@ -611,14 +621,15 @@ static void run_c2c(const opts_t *o, const int *cpus, int n)
             /* Best sample: each sample already averages c2c_iters round trips;
              * taking the minimum filters out samples hit by preemption. */
             double med = NAN, mn = NAN;
-            if (nb_c2c_pair(cpus[i], cpus[j], o->c2c_samples, o->c2c_iters, &med, &mn) == 0)
+            if (nb_c2c_pair(cpus[i], cpus[j], o->c2c_method, o->c2c_samples, o->c2c_iters, &med, &mn) == 0)
                 med = mn;
             else
                 med = NAN;
             m[i * n + j] = m[j * n + i] = med;
             if (!isnan(med)) {
                 int cat = share_first(&topo[i], cpus[j]) ? 0
-                        : share_level(&topo[i], cpus[j], 2) ? 1 : 2;
+                        : share_level(&topo[i], cpus[j], 2) ? 1
+                        : topo[i].package != topo[j].package ? 3 : 2;
                 cat_m[i * n + j] = cat_m[j * n + i] = (signed char)cat;
                 csum[cat] += med;
                 ccnt[cat]++;
@@ -648,13 +659,10 @@ static void run_c2c(const opts_t *o, const int *cpus, int n)
         printf("\n");
     }
 
-    static const char *const cat_name[3] = {
-        "Same core (SMT siblings)", "Same L2 cluster", "Different core/cluster"
-    };
     printf("\n   %-26s %6s %8s %8s %8s\n", "Pair type", "pairs", "min", "avg", "max");
-    for (int c = 0; c < 3; c++)
+    for (int c = 0; c < NB_C2C_NCATS; c++)
         if (ccnt[c])
-            printf("   %-26s %6d %8.1f %8.1f %8.1f\n", cat_name[c], ccnt[c], cmin[c],
+            printf("   %-26s %6d %8.1f %8.1f %8.1f\n", nb_c2c_cat_names[c], ccnt[c], cmin[c],
                    csum[c] / ccnt[c], cmax[c]);
 
     /* Hand the matrix over to the report (freed at exit). */
@@ -663,6 +671,7 @@ static void run_c2c(const opts_t *o, const int *cpus, int n)
     R.c2c_n = n;
     R.c2c_samples = o->c2c_samples;
     R.c2c_iters = o->c2c_iters;
+    R.c2c_method = nb_c2c_method_names[o->c2c_method];
     R.c2c_cpus = malloc((size_t)n * sizeof *R.c2c_cpus);
     if (R.c2c_cpus)
         memcpy(R.c2c_cpus, cpus, (size_t)n * sizeof *cpus);
@@ -670,7 +679,7 @@ static void run_c2c(const opts_t *o, const int *cpus, int n)
         R.has_c2c = false;
     R.c2c_m = m;
     R.c2c_cat = cat_m;
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < NB_C2C_NCATS; c++) {
         R.cat_cnt[c] = ccnt[c];
         R.cat_min[c] = cmin[c];
         R.cat_avg[c] = ccnt[c] ? csum[c] / ccnt[c] : 0;
@@ -707,6 +716,9 @@ static void usage(const char *argv0)
         "                       calibrate with --tests memlat\n"
         "      --aida-huge-pages  --aida memory bandwidth on 2 MiB pages instead of\n"
         "                       AIDA64's 4 KiB pages\n"
+        "      --c2c-method M   core-to-core ping-pong: cas (default; both sides spin on\n"
+        "                       compare-and-swap) or load (spin on loads, answer with a\n"
+        "                       store; overstates latency on older/FSB CPUs)\n"
         "  -V, --version        print version\n"
         "  -h, --help           this help\n\n"
         "Bandwidth is in GB/s (10^9 bytes/s) of program-visible traffic; copy counts\n"
@@ -770,6 +782,7 @@ int main(int argc, char **argv)
         { "aida", no_argument, NULL, OPT_AIDA },
         { "aida-lat-block", required_argument, NULL, OPT_AIDA_BLOCK },
         { "aida-huge-pages", no_argument, NULL, OPT_AIDA_HUGE },
+        { "c2c-method", required_argument, NULL, OPT_C2C_METHOD },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -849,6 +862,18 @@ int main(int argc, char **argv)
             }
             break;
         case OPT_AIDA_HUGE: o.aida_small_pages = false; break;
+        case OPT_C2C_METHOD: {
+            int m = -1;
+            for (int k = 0; k < NB_C2C_NMETHODS; k++)
+                if (!strcmp(optarg, nb_c2c_method_names[k]))
+                    m = k;
+            if (m < 0) {
+                fprintf(stderr, "invalid --c2c-method '%s' (cas or load)\n", optarg);
+                return 2;
+            }
+            o.c2c_method = m;
+            break;
+        }
         case 'V': printf("nekobench %s\n", NB_VERSION); return 0;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 2;
@@ -919,6 +944,9 @@ int main(int argc, char **argv)
     if (nb_topo_replayed())
         printf("NOTE:         topology replayed from NEKOBENCH_SYSFS_ROOT=%s;\n"
                "              measurements still run on this machine\n", getenv("NEKOBENCH_SYSFS_ROOT"));
+    if (nb_topo_apic_rebuilt())
+        printf("NOTE:         kernel APIC IDs differ from CPUID initial APIC IDs (renumbered by\n"
+               "              firmware); packages and cache sharing rebuilt from CPUID\n");
     printf("CPU:          %s\n", model);
     printf("Logical CPUs: %d usable (of %ld online)\n", nallowed, sysconf(_SC_NPROCESSORS_ONLN));
     printf("THP:          %s%s\n", nb_thp_mode(),
@@ -977,10 +1005,15 @@ int main(int argc, char **argv)
         for (int j = 0; j < cls[k].ncache; j++) {
             char name[16], sz[32];
             nb_fmt_size(cls[k].cache[j].size, sz, sizeof sz);
-            printf("          %-4s %10s, %zu B lines, shared by %d CPU%s%s\n",
+            char fixed[96] = "";
+            if (cls[k].cache[j].shared_fixed)
+                snprintf(fixed, sizeof fixed, "  [OS reports %d; rebuilt from CPUID]",
+                         cls[k].cache[j].os_nshared);
+            printf("          %-4s %10s, %zu B lines, shared by %d CPU%s%s%s\n",
                    level_name(&cls[k].cache[j], name, sizeof name), sz, cls[k].cache[j].line,
                    cls[k].cache[j].nshared, cls[k].cache[j].nshared == 1 ? "" : "s",
-                   cls[k].cache[j].inferred ? "  [not reported by the OS; from CPU model table]" : "");
+                   cls[k].cache[j].inferred ? "  [not reported by the OS; from CPU model table]" : "",
+                   fixed);
         }
     }
     printf("  L4: %s\n", l4 ? "present" : "not present");

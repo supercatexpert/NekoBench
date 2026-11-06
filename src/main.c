@@ -58,13 +58,18 @@ static int best_cpu(const cpu_set_t *set)
 /* Print the measured clock against the cpufreq maximum, with a hint when the
  * core is clearly below it. Latency in cycles is unaffected (it's converted
  * with the measured clock); latency in ns and core-bound bandwidth are. */
-static void print_clock_note(int cpu, double ghz)
+/* With show_max, always prints the max boost clock; otherwise only the
+ * warning when the measured clock is well below it. */
+static void print_clock_note(int cpu, double ghz, bool show_max)
 {
     unsigned max = nb_cpu_max_mhz(cpu);
     if (!max || ghz <= 0)
         return;
+    bool low = ghz < 0.92 * max / 1000.0;
+    if (!low && !show_max)
+        return;
     printf("   max boost %.2f GHz", max / 1000.0);
-    if (ghz < 0.92 * max / 1000.0)
+    if (low)
         printf(" -- running %.0f%% below it (busy cores lower the turbo ratio;\n"
                "   also power/thermal limits, governor). Cycle counts are unaffected; ns and\n"
                "   L1/L2 GB/s scale with the clock",
@@ -173,7 +178,7 @@ static void run_single(const opts_t *o, const nb_cpu_t *t)
     double ghz = nb_measure_freq_ghz(t->cpu);
     printf("\n== Single-thread: CPU %d (%s), measured clock %.2f GHz ==\n",
            t->cpu, t->kind, ghz);
-    print_clock_note(t->cpu, ghz);
+    print_clock_note(t->cpu, ghz, true);
     if (R.nsingle >= NB_RPT_MAX_CLASS)
         R.nsingle = NB_RPT_MAX_CLASS - 1;   /* (never in practice) reuse last slot */
     nb_rpt_single_t *rs = &R.single[R.nsingle++];
@@ -530,16 +535,25 @@ static void run_aida(const opts_t *o, const int *cpus, int n, int lat_cpu, bool 
     }
     R.aida_ghz = ghz;
     snprintf(R.aida_lat_pattern, sizeof R.aida_lat_pattern, "%s", blk);
-    printf("\n   Latency CPU clock: %.2f GHz, measured right after the latency runs (which go\n"
-           "   first, before the all-core bandwidth runs heat the chip). Compare across tools\n"
-           "   in cycles: ns scale with the clock.\n", ghz);
-    print_clock_note(lat_cpu, ghz);
+    unsigned maxmhz = nb_cpu_max_mhz(lat_cpu);
+    char maxs[48] = "";
+    if (maxmhz)
+        snprintf(maxs, sizeof maxs, " (max boost %.2f GHz)", maxmhz / 1000.0);
+    printf("\n   Latency CPU clock: %.2f GHz%s, measured right after the latency runs\n"
+           "   (which go first, before the all-core bandwidth runs heat the chip). Compare\n"
+           "   across tools in cycles: ns scale with the clock.\n", ghz, maxs);
+    print_clock_note(lat_cpu, ghz, false);
     printf("   Notes: copy = bytes read + written, as AIDA64 scores it. Memory write/copy use %s.\n"
            "   Memory bandwidth: %s per thread, %s pages. Memory latency: %s chase over %s.\n"
-           "   MB/s and GB/s are decimal (10^6, 10^9). The first cache row is every core's\n"
-           "   first-level D-cache (P-core L0 + E-core L1d on Lion/Cougar Cove hybrids).\n",
+           "   MB/s and GB/s are decimal (10^6, 10^9).\n",
            nt ? "non-temporal stores" : "regular stores (no NT support in this build)", pers,
            o->aida_small_pages ? "4 KiB" : "2 MiB (THP)", blk, wss);
+    for (int i = 0; i < nrows; i++)
+        if (!rows[i].ram && strchr(rows[i].name, '/')) {
+            printf("   The %s row is every core's first-level D-cache (P-core L0 + E-core L1d),\n"
+                   "   grouped by position as AIDA64 does.\n", rows[i].name);
+            break;
+        }
     R.aida_small_pages = o->aida_small_pages;
     snprintf(R.aida_mem_per, sizeof R.aida_mem_per, "%s", pers);
     R.aida_nt = nt;

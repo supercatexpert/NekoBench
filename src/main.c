@@ -18,7 +18,8 @@
 #define MAX_CLASS  16
 
 enum { T_LAT = 1, T_BW = 2, T_MT = 4, T_C2C = 8, T_SWEEP = 16, T_AIDA = 32, T_MEMLAT = 64 };
-enum { OPT_AIDA = 1000, OPT_AIDA_BLOCK, OPT_AIDA_HUGE, OPT_SMALL_PAGES, OPT_C2C_METHOD };
+enum { OPT_AIDA = 1000, OPT_AIDA_BLOCK, OPT_AIDA_HUGE, OPT_SMALL_PAGES, OPT_C2C_METHOD,
+       OPT_SIMD };
 
 typedef struct {
     unsigned  tests;
@@ -768,6 +769,8 @@ static void usage(const char *argv0)
         "      --c2c-method M   core-to-core ping-pong: cas (default; both sides spin on\n"
         "                       compare-and-swap) or load (spin on loads, answer with a\n"
         "                       store; overstates latency on older/FSB CPUs)\n"
+        "      --simd LEVEL     bandwidth kernels: sse2, avx or avx512 on x86 (default:\n"
+        "                       the widest this CPU supports)\n"
         "  -V, --version        print version\n"
         "  -h, --help           this help\n\n"
         "Bandwidth is in GB/s (10^9 bytes/s) of program-visible traffic; copy counts\n"
@@ -833,6 +836,7 @@ int main(int argc, char **argv)
         { "aida-huge-pages", no_argument, NULL, OPT_AIDA_HUGE },
         { "small-pages", no_argument, NULL, OPT_SMALL_PAGES },
         { "c2c-method", required_argument, NULL, OPT_C2C_METHOD },
+        { "simd", required_argument, NULL, OPT_SIMD },
         { "version", no_argument, NULL, 'V' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
@@ -913,6 +917,10 @@ int main(int argc, char **argv)
             break;
         case OPT_AIDA_HUGE: o.aida_small_pages = false; break;
         case OPT_SMALL_PAGES: o.small_pages = true; break;
+        case OPT_SIMD:
+            if (nb_bw_select(optarg) != 0)
+                return 2;
+            break;
         case OPT_C2C_METHOD: {
             int m = -1;
             for (int k = 0; k < NB_C2C_NMETHODS; k++)
@@ -1006,18 +1014,7 @@ int main(int argc, char **argv)
            : strcmp(nb_thp_mode(), "never") == 0
                ? "  (WARNING: no huge pages, latencies include TLB misses)" : "");
     printf("RAM test WS:  %s\n", memsz);
-    const char *simd =
-#if defined(__AVX512F__)
-        "AVX-512";
-#elif defined(__AVX__)
-        "AVX";
-#elif defined(__SSE2__)
-        "SSE2";
-#elif defined(__ARM_NEON)
-        "NEON";
-#else
-        "generic";
-#endif
+    const char *simd = nb_bw_simd_name();
     nb_cpufreq_policy(R.policy, sizeof R.policy);
     printf("CPU freq:     %s\n", R.policy);
     if (nb_llc_clock_risk(&o.cpus))

@@ -34,17 +34,41 @@ report_assets = custom_target('report_assets',
   output : 'report_assets.h',
   command : [py, files('tools/embed.py'), '@OUTPUT@', '@INPUT@'])
 
+# Bandwidth kernels: the program is built for the baseline ISA (or
+# -march=native), and on x86 the kernels are also built for wider SIMD
+# levels; the widest one the CPU supports is picked at run time.
+kernel_libs = []
+kvariants = []
+if host_machine.cpu_family() == 'x86'
+  kvariants += [['sse2', 'NB_REQ_SSE2', ['-msse2'], 'NB_BW_HAVE_SSE2']]
+endif
+if host_machine.cpu_family() in ['x86', 'x86_64']
+  kvariants += [
+    ['avx', 'NB_REQ_AVX', ['-mavx'], 'NB_BW_HAVE_AVX'],
+    ['avx512', 'NB_REQ_AVX512', ['-mavx512f'], 'NB_BW_HAVE_AVX512'],
+  ]
+endif
+foreach v : kvariants
+  if cc.has_multi_arguments(v[2])
+    kernel_libs += static_library('bwk_' + v[0], 'src/bw_kernels.c',
+      c_args : c_args + v[2] + ['-DNB_KVAR=nb_bwk_' + v[0], '-DNB_KREQ=' + v[1]])
+    c_args += '-D' + v[3]
+  endif
+endforeach
+
 src = files(
   'src/main.c',
   'src/util.c',
   'src/topology.c',
   'src/latency.c',
   'src/bandwidth.c',
+  'src/bw_kernels.c',
   'src/c2c.c',
   'src/html.c',
 )
 
 executable('nekobench', src, report_assets,
   c_args : c_args,
+  link_with : kernel_libs,
   dependencies : deps,
   install : true)

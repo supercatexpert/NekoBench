@@ -21,9 +21,13 @@ ninja -C build
 ./build/nekobench
 ```
 
-The default binary is portable (SSE2 baseline on x86-64), so on AVX/AVX-512
-machines it under-reports L1/L2 bandwidth. For the widest loads and stores of
-the build machine, use `meson setup build -Dnative=true` (`-march=native`).
+The default binary is portable: everything is built for the baseline ISA
+(SSE2 on x86-64). On x86 the bandwidth kernels are also built for AVX and
+AVX-512, and at startup NekoBench uses the widest one the CPU and OS support
+(`SIMD stores:` in the header shows which). They're the only code where SIMD
+width matters: latency and core-to-core tests are scalar. `--simd sse2|avx|avx512`
+forces a level. `-Dnative=true` builds everything with `-march=native`
+instead; on a 14700K both give the same bandwidth.
 
 ## Platforms
 
@@ -32,8 +36,8 @@ NekoBench depends on Linux affinity, sysfs and THP interfaces.
 
 | Architecture | Read kernel | Write / copy | NT stores | Status |
 |---|---|---|---|---|
-| x86-64 | inline asm, pure loads (SSE2 / AVX / AVX-512) | native-width vectors | MOVNT | tested on hardware |
-| i686 | portable C vectors (SSE2 with `-march`) | C vectors | MOVNT with SSE2 | cross-built, run under qemu |
+| x86-64 | inline asm, pure loads (SSE2 / AVX / AVX-512, chosen at run time) | C vectors, same width | MOVNT | tested on hardware |
+| i686 | portable C vectors (scalar / SSE2 / AVX / AVX-512, chosen at run time) | C vectors | MOVNT with SSE2 | cross-built, run under qemu |
 | aarch64 | inline asm, `ldp q` pure loads | C vectors (NEON) | `STNP` | cross-built, run under qemu |
 | armv7 (hf), riscv64, others | portable C vectors | C vectors | none | cross-built, run under qemu |
 
@@ -43,10 +47,9 @@ meaningless, so these targets still need a check on real hardware.
 
 Notes per platform:
 
-* **i686:** Debian's `i686` baseline has no SSE2, so the default build
-  (and any cross build) uses scalar code. Building on the machine itself with
-  `-Dnative=true` enables whatever `-march=native` finds.
-  For a portable SSE2 binary, use `-Dc_args=-msse2`. 32-bit address space
+* **i686:** Debian's `i686` baseline has no SSE2, so everything outside the
+  bandwidth kernels is scalar x87/integer code; the kernels come in scalar,
+  SSE2, AVX and AVX-512 builds and are picked at run time. 32-bit address space
   limits the RAM working set, and `--aida` with many threads may need a
   smaller `-m`.
 * **ARM big.LITTLE / DynamIQ:** core types come from Linux's
@@ -89,6 +92,7 @@ nekobench [options]
       --aida-huge-pages  --aida buffers on 2 MiB instead of 4 KiB pages
       --small-pages    4 KiB pages for every buffer instead of 2 MiB THP
       --c2c-method cas|load  core-to-core ping-pong primitive (default: cas)
+      --simd sse2|avx|avx512  bandwidth kernel width (default: widest supported)
 ```
 
 `--tests memlat` (not part of `all`) prints memory latency for block-random
@@ -277,7 +281,7 @@ best of N trials. It is converted to cycles using a clock measured on the same
 core: a chain of dependent register adds, which runs at 1 add/cycle.
 
 **Bandwidth.** Each kernel streams over its buffer in 512 B blocks using the
-widest SIMD available. On x86 the read kernel is pure loads in inline asm:
+widest SIMD the CPU supports (see Build). On x86 the read kernel is pure loads in inline asm:
 adding even one ALU op per load holds Golden Cove to ~2 loads/cycle instead
 of 3. Write and copy kernels contain a compiler barrier so they can't be
 turned into `memset`/`memcpy`. The copy destination is skewed by 2 KiB to
@@ -327,7 +331,8 @@ run on the local CPUs, so restrict them to matching CPU numbers, e.g.
 | `src/main.c` | CLI, core-type detection, working-set sizing, reports |
 | `src/topology.c` | sysfs/sysconf cache topology, CPU model |
 | `src/latency.c` | pointer chase, clock measurement |
-| `src/bandwidth.c` | SIMD kernels, pinned thread-group runner |
+| `src/bandwidth.c` | kernel dispatch, pinned thread-group runner |
+| `src/bw_kernels.c` | SIMD bandwidth kernels (built once per SIMD level) |
 | `src/c2c.c` | cache-line ping-pong |
 | `src/util.c` | timing, pinning, huge-page allocation, parsing/formatting |
 | `src/report.h`, `src/html.c` | in-memory results and the HTML renderer |

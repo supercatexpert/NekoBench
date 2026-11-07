@@ -91,6 +91,8 @@ double nb_latency_block_ns(int cpu, size_t size, size_t block, unsigned trial_ms
 enum { NB_BW_READ, NB_BW_WRITE, NB_BW_COPY, NB_BW_NTWRITE, NB_BW_NTCOPY, NB_BW_NKERNELS };
 extern const char *const nb_bw_names[NB_BW_NKERNELS];
 bool nb_bw_kernel_available(int kernel);
+int nb_bw_select(const char *key);      /* NULL: widest supported; -1 if unsupported */
+const char *nb_bw_simd_name(void);       /* SIMD level of the active kernels */
 
 /* Run `n` threads (thread i pinned to cpus[i], working set sizes[i]) and
  * report aggregate GB/s per kernel in out[] (-1 for kernels not requested).

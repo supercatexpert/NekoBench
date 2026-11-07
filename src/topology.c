@@ -450,6 +450,46 @@ void nb_cpufreq_policy(char *buf, size_t n)
         snprintf(buf, n, "%s", gov);
 }
 
+/* Arm DynamIQ: the shared L3 (DSU) can be clocked from one cluster's
+ * cpufreq policy. On the RK3588 it follows the LITTLE cluster, so with an
+ * on-demand governor an A76 measured alone sees ~3x the L3/RAM latency
+ * while the idle A55s sit at their lowest clock. Flag it when a last-level
+ * cache spans several cpufreq policies and any of them isn't "performance". */
+bool nb_llc_clock_risk(const cpu_set_t *cpus)
+{
+#if defined(__aarch64__) || defined(__arm__)
+    for (int c = 0; c < CPU_SETSIZE; c++) {
+        if (!CPU_ISSET(c, cpus))
+            continue;
+        nb_cpu_t t;
+        if (nb_topo_cpu(c, &t) != 0 || t.ncache == 0)
+            continue;
+        const cpu_set_t *llc = &t.cache[t.ncache - 1].shared;
+        char first[256] = "", path[128], rel[256], gov[64];
+        bool multi = false, ondemand = false;
+        for (int o = 0; o < CPU_SETSIZE; o++) {
+            if (!CPU_ISSET(o, llc))
+                continue;
+            snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/related_cpus", o);
+            if (!read_line(path, rel, sizeof rel))
+                continue;
+            if (!first[0])
+                snprintf(first, sizeof first, "%s", rel);
+            else if (strcmp(first, rel) != 0)
+                multi = true;
+            snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", o);
+            if (read_line(path, gov, sizeof gov) && strcmp(gov, "performance") != 0)
+                ondemand = true;
+        }
+        if (multi && ondemand)
+            return true;
+    }
+#else
+    (void)cpus;
+#endif
+    return false;
+}
+
 static int topo_read(int cpu, nb_cpu_t *out, bool quirks)
 {
     memset(out, 0, sizeof *out);

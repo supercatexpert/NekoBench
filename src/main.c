@@ -1020,6 +1020,11 @@ int main(int argc, char **argv)
 #endif
     nb_cpufreq_policy(R.policy, sizeof R.policy);
     printf("CPU freq:     %s\n", R.policy);
+    if (nb_llc_clock_risk(&o.cpus))
+        printf("NOTE:         the shared L3 spans several cpufreq policies that aren't all\n"
+               "              \"performance\"; on some SoCs (e.g. RK3588) its clock follows one\n"
+               "              cluster, so a core tested alone sees slow L3/RAM while the other\n"
+               "              cluster idles. Set every policy to performance for stable numbers.\n");
     printf("Compiler:     %s, SIMD stores: %s, NT stores: %s\n", __VERSION__, simd,
            nb_bw_kernel_available(NB_BW_NTWRITE) ? "yes" : "no");
 

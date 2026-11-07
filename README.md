@@ -185,6 +185,15 @@ measure the clock again right after each latency run, and convert to cycles
 with that. The sweep prints it in a GHz column. For stable ns figures, use
 the `performance` governor.
 
+On Arm DynamIQ SoCs the shared L3 can also be clocked from one cluster's
+cpufreq policy, and the core's own clock says nothing about it. On the
+RK3588 the L3 follows the LITTLE cluster: under `ondemand`, an A76 tested
+alone measured 46 ns L3 and 171 ns RAM latency, with 5.5 GB/s RAM read,
+while the idle A55s sat at their lowest clock. With every policy on
+`performance` it measured 15.8 ns, 114 ns and 20.5 GB/s. NekoBench prints a
+NOTE when the last-level cache spans several cpufreq policies that aren't
+all `performance`.
+
 ## HTML report
 
 `--html FILE` writes one file with no external resources, so it can be

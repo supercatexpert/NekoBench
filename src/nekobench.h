@@ -68,7 +68,8 @@ typedef struct {
 
 int  nb_topo_cpu(int cpu, nb_cpu_t *out);
 unsigned nb_cpu_max_mhz(int cpu);              /* cpufreq max (boost) clock, 0 if unknown */
-void nb_cpufreq_policy(char *buf, size_t n);   /* "governor / EPP" of the first CPU */
+void nb_cpufreq_policy(char *buf, size_t n);
+bool nb_llc_clock_risk(const cpu_set_t *cpus);   /* shared LLC spans cpufreq policies, not all "performance" */   /* "governor / EPP" of the first CPU */
 bool nb_topo_replayed(void);   /* NEKOBENCH_SYSFS_ROOT in effect */
 /* The kernel's APIC IDs differ from CPUID's initial ones (firmware
  * renumbering); packages and cache sharing were rebuilt from CPUID. */

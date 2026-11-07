@@ -1,4 +1,4 @@
-# meson setup build-aarch64 --cross-file cross/aarch64-linux-gnu.txt -Dnative=false
+# meson setup build-aarch64 --cross-file cross/aarch64-linux-gnu.txt
 [binaries]
 c = 'aarch64-linux-gnu-gcc'
 strip = 'aarch64-linux-gnu-strip'

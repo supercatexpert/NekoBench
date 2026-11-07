@@ -1,4 +1,4 @@
-# meson setup build-armv7 --cross-file cross/arm-linux-gnueabihf.txt -Dnative=false
+# meson setup build-armv7 --cross-file cross/arm-linux-gnueabihf.txt
 [binaries]
 c = 'arm-linux-gnueabihf-gcc'
 strip = 'arm-linux-gnueabihf-strip'

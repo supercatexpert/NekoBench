@@ -1,4 +1,4 @@
-# meson setup build-riscv64 --cross-file cross/riscv64-linux-gnu.txt -Dnative=false
+# meson setup build-riscv64 --cross-file cross/riscv64-linux-gnu.txt
 [binaries]
 c = 'riscv64-linux-gnu-gcc'
 strip = 'riscv64-linux-gnu-strip'

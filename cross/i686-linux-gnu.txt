@@ -1,4 +1,4 @@
-# meson setup build-i686 --cross-file cross/i686-linux-gnu.txt -Dnative=false
+# meson setup build-i686 --cross-file cross/i686-linux-gnu.txt
 [binaries]
 c = 'i686-linux-gnu-gcc'
 strip = 'i686-linux-gnu-strip'

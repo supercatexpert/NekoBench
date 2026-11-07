@@ -16,12 +16,14 @@ Linux only: it reads cache topology from sysfs and pins threads with
 ## Build
 
 ```sh
-meson setup build              # release build, -march=native by default
+meson setup build              # release build, portable (no -march=native)
 ninja -C build
 ./build/nekobench
 ```
 
-`meson setup build -Dnative=false` builds a portable binary (SSE2 baseline on x86-64).
+The default binary is portable (SSE2 baseline on x86-64), so on AVX/AVX-512
+machines it under-reports L1/L2 bandwidth. For the widest loads and stores of
+the build machine, use `meson setup build -Dnative=true` (`-march=native`).
 
 ## Platforms
 
@@ -41,9 +43,9 @@ meaningless, so these targets still need a check on real hardware.
 
 Notes per platform:
 
-* **i686:** Debian's `i686` baseline has no SSE2, so a cross build with
-  `-Dnative=false` uses scalar code. Building on the machine itself
-  (`-Dnative=true`, the default) enables whatever `-march=native` finds.
+* **i686:** Debian's `i686` baseline has no SSE2, so the default build
+  (and any cross build) uses scalar code. Building on the machine itself with
+  `-Dnative=true` enables whatever `-march=native` finds.
   For a portable SSE2 binary, use `-Dc_args=-msse2`. 32-bit address space
   limits the RAM working set, and `--aida` with many threads may need a
   smaller `-m`.
@@ -62,7 +64,7 @@ Cross-compiling (cross files for aarch64, i686, armhf and riscv64 are in
 `cross/`, using Debian's `gcc-<triple>` packages and `qemu-user`):
 
 ```sh
-meson setup build-aarch64 --cross-file cross/aarch64-linux-gnu.txt -Dnative=false
+meson setup build-aarch64 --cross-file cross/aarch64-linux-gnu.txt
 ninja -C build-aarch64
 qemu-aarch64 -L /usr/aarch64-linux-gnu build-aarch64/nekobench -q   # smoke test
 ```

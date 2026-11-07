@@ -1092,13 +1092,11 @@ int main(int argc, char **argv)
     }
     if (o.tests & T_MT)
         run_mt(&o, runcpus, nrun);
-    /* Latency on the fastest-boosting CPU of the first core type. */
+    /* Latency on the fastest-boosting CPU of any core type: CPU 0 is a
+     * LITTLE core on most Arm big.LITTLE SoCs, so "first type" is wrong. */
     int lat_cpu = o.cpu;
-    if (lat_cpu < 0) {
-        cpu_set_t both;
-        CPU_AND(&both, &cls_cpus[0], &o.cpus);
-        lat_cpu = best_cpu(CPU_COUNT(&both) ? &both : &o.cpus);
-    }
+    if (lat_cpu < 0)
+        lat_cpu = best_cpu(&o.cpus);
     if (o.tests & T_AIDA)
         run_aida(&o, runcpus, nrun, lat_cpu, mem_set);
     if (o.tests & T_MEMLAT)

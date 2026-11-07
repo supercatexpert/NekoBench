@@ -151,7 +151,8 @@ NekoBench's own choices, where AIDA64 doesn't document its method:
   cover the region (45 ns at 1 MiB, 21 ns at 4 KiB), and fully random gave
   106 ns. Recalibrate on other CPUs with `--tests memlat` and
   `--aida-lat-block`.
-* Latency runs first, on the fastest-boosting CPU of the first core type,
+* Latency runs first, on the fastest-boosting CPU of any core type (a big
+  core on Arm big.LITTLE, where CPU 0 is usually LITTLE),
   before the all-core bandwidth runs heat the chip. On a laptop those runs
   pulled the single-core clock from ~4.7 to 4.3 GHz. The clock is measured
   right after the latency runs, and latency is also printed in cycles.
